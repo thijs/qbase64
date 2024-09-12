@@ -51,10 +51,26 @@
 (define-constant +max-string-length+ most-positive-fixnum
   "Max length of the string that is used as encoding output or decoding input")
 
+
+(defun reorder (alphabet salt)
+  "Shuffle alphabet by given salt"
+  (let ((salt-len (length salt))
+        (alphabet (copy-seq alphabet)))
+    (when (plusp salt-len)
+      (loop :for i :from (1- (length alphabet)) :downto 1
+            :for idx := 0 :then (mod (1+ idx) salt-len)
+            :for salt-code := (char-code (aref salt idx))
+            :for isum := salt-code :then (+ isum salt-code)
+            :for j := (mod (+ salt-code idx isum) i)
+            :do (rotatef (aref alphabet j) (aref alphabet i))))
+    alphabet))
+
+
 ;;; encode
 
 (defun/td %encode (bytes string &key
                          (scheme :original)
+                         (salt nil)
                          (encode-trailing-bytes t)
                          (start1 0)
                          (end1 (length bytes))
@@ -69,9 +85,12 @@
   (declare (type scheme scheme))
   (declare (type positive-fixnum start1 end1 start2 end2))
   (declare (optimize (speed 3) (safety 0) (space 0)))
-  (let ((set (ecase scheme
-               (:original +original-set+)
-               (:uri +uri-set+))))
+  (let* ((org-set (ecase scheme
+                    (:original +original-set+)
+                    (:uri +uri-set+)))
+         (set (if salt
+                  (reorder org-set salt)
+                  org-set)))
     (declare (type simple-base-string set))
     (flet ((encode-byte (byte)
              (char set (logand #o77 byte))))
@@ -123,6 +142,7 @@ MAKE-ENCODER, then start encoding bytes using ENCODE."
   (%make-encoder :scheme scheme))
 
 (defun encode (encoder bytes string &key
+                                      (salt nil)
                                       (start1 0)
                                       (end1 (length bytes))
                                       (start2 0)
@@ -199,6 +219,7 @@ Returns POSITION, PENDINGP.
       ;; Then encode PBYTES
       (multiple-value-bind (pos1 pos2)
           (%encode pbytes string
+                   :salt salt
                    :scheme scheme
                    :start1 0
                    :end1 pbytes-end
@@ -227,6 +248,7 @@ Returns POSITION, PENDINGP.
     ;; Encode BYTES now
     (multiple-value-bind (pos1 pos2)
         (%encode bytes string
+                 :salt salt
                  :scheme scheme
                  :start1 start1
                  :end1 end1
@@ -352,7 +374,7 @@ CLOSE is invoked."))
   (declare (ignore abort))
   (flush-pending-bytes stream))
 
-(defun encode-bytes (bytes &key (scheme :original) (linebreak 0))
+(defun encode-bytes (bytes &key (scheme :original) (salt nil) (linebreak 0))
   "Encode BYTES to base64 and return the string.
 
   BYTES: Should be a single-dimentional array of (UNSIGNED-BYTE 8)
@@ -360,6 +382,8 @@ CLOSE is invoked."))
 
   SCHEME: The base64 encoding scheme to use. Must
   be :ORIGINAL (default) or :URI.
+
+  SALT: If provided will reorder the alphabet based on SALT.
 
   LINEBREAK: If 0 (the default), no linebreaks are written. Otherwise
   its value must be the max number of characters per line."
@@ -379,7 +403,7 @@ CLOSE is invoked."))
       (let ((string (make-string (encode-length (length bytes) t) :element-type 'base-char))
             (encoder (make-encoder :scheme scheme)))
         (multiple-value-bind (pos2 pendingp)
-            (encode encoder bytes string :finish t)
+            (encode encoder bytes string :finish t :salt salt)
           (declare (ignore pos2))
           (when pendingp
             (error "Could not encode all bytes to string"))
